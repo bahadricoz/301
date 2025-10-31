@@ -934,7 +934,8 @@ if start:
             td = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8")
         td = td.fillna("")
         url_cols = [
-            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "Ürün Linki", "urun_link",
+            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "UrunURL", "URUNURL", "Ürün Linki", "urun_link",
+            "Sorgul_URL", "SORGUL_URL", "SorguUrl", "Sorgu_URL",
             "SeoUrl", "Seo URL", "Slug", "Seo Adres", "Seo-Url"
         ]
         for col in url_cols:
@@ -959,8 +960,24 @@ if start:
     progress.progress(1.0)
     status.empty()
 
+    # Fallback: if crawling produced no pages but we have seed URLs from Ticimax file,
+    # build pages directly from those URLs so we can generate redirects.
+    if not pages and seed_urls:
+        pages = []
+        for u in seed_urls:
+            path = urlparse(u).path
+            last_seg = path.strip("/").split("/")[-1] if path else ""
+            title_guess = last_seg.replace("-", " ").replace("_", " ").strip().title() or u
+            slug = slugify(title_guess) if title_guess else last_seg
+            page_type = _determine_page_type(u, None)
+            pages.append({
+                "url": u,
+                "title": title_guess,
+                "slug": slug,
+                "type": page_type,
+            })
     if not pages:
-        st.warning("Hiç sayfa bulunamadı. Farklı bir URL deneyin.")
+        st.warning("Hiç sayfa bulunamadı. Farklı bir URL deneyin veya Ticimax CSV yükleyin.")
         st.stop()
 
     st.success(f"✅ {len(pages)} sayfa bulundu!")
@@ -1011,12 +1028,13 @@ if start:
             tdf = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8")
         tdf = tdf.fillna("")
         url_cols = [
-            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "Ürün Linki", "urun_link",
+            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "UrunURL", "URUNURL", "Ürün Linki", "urun_link",
+            "Sorgul_URL", "SORGUL_URL", "SorguUrl", "Sorgu_URL",
             "SeoUrl", "Seo URL", "Slug", "Seo Adres", "Seo-Url"
         ]
-        sku_cols = ["SKU", "Sku", "StockCode", "Stock Code", "Stok Kodu", "StokKodu", "UrunKodu", "Ürün Kodu"]
-        barcode_cols = ["Barkod", "Barcode", "EAN", "GTIN", "Gtin", "Gtin13", "Barkod Listesi"]
-        title_cols = ["Title", "Ürün Adı", "Urun Adi", "UrunAdi", "Name", "ProductName"]
+        sku_cols = ["SKU", "Sku", "StockCode", "Stock Code", "Stok Kodu", "StokKodu", "STOKKODU", "UrunKodu", "URUNKODU", "Ürün Kodu"]
+        barcode_cols = ["Barkod", "BARKOD", "Barcode", "EAN", "GTIN", "Gtin", "Gtin13", "Barkod Listesi"]
+        title_cols = ["Title", "Ürün Adı", "URUNADI", "Urun Adi", "UrunAdi", "Name", "ProductName"]
 
         def _pick(row, cols):
             for c in cols:
