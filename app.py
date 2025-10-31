@@ -832,6 +832,20 @@ def find_all_page_links(start_url: str, max_pages: int = 100, seed_urls: Optiona
 
         html_str = start_html if current == start_url else fetch_html(current)
         if not html_str:
+            # Could not fetch (e.g., bot protection). Still record a minimal page entry
+            path = urlparse(current).path.strip("/")
+            url_slug = path.split("/")[-1] if path else ""
+            # Infer title from path
+            title = url_slug.replace("-", " ").replace("_", " ").title() or current
+            page_type = _determine_page_type(current, None)
+            slug = slugify(title) if title else url_slug
+            all_pages.append({
+                "url": current,
+                "title": title or "",
+                "slug": slug,
+                "type": page_type,
+            })
+            # Skip discovery since no HTML
             continue
 
         soup = BeautifulSoup(html_str, "html.parser")
