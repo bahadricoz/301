@@ -295,6 +295,14 @@ def parse_ld_json_product(soup: BeautifulSoup, base_url: str) -> JsonLdProduct:
 
 def find_product_name(soup: BeautifulSoup) -> Optional[str]:
     for sel in [
+        # Ticimax
+        "h1.urunDetayBaslik",
+        ".productDetailRight h1",
+        ".productDetail .title",
+        ".productDetail h1",
+        ".productDetail .product-title",
+        ".productDetail .productName",
+        # Existing/common
         "h1.product-title",
         "h1.product_name",
         "h1#productName",
@@ -319,6 +327,14 @@ def find_product_name(soup: BeautifulSoup) -> Optional[str]:
 
 def find_price_text(soup: BeautifulSoup) -> Optional[str]:
     for sel in [
+        # Ticimax
+        ".urunDetayPrice .fiyat",
+        ".urunDetayPrice .price",
+        ".urunDetayPrice",
+        ".productDetailRight .price",
+        ".productDetailRight .newPrice",
+        ".fiyat",
+        # Existing/common
         ".product-price .price",
         ".product-price .new",
         ".price .current",
@@ -346,6 +362,14 @@ def find_price_text(soup: BeautifulSoup) -> Optional[str]:
 
 def find_sku(soup: BeautifulSoup) -> Optional[str]:
     for sel in [
+        # Ticimax
+        ".urunDetayStok",
+        ".sku-info",
+        ".productDetail .urunDetayStok",
+        ".productDetail .stokKodu",
+        ".productDetail .sku",
+        "[data-sku]",
+        # Existing/common
         "[itemprop='sku']",
         ".product-sku",
         "#productSku",
@@ -358,6 +382,8 @@ def find_sku(soup: BeautifulSoup) -> Optional[str]:
         except Exception:
             el = None
         if el:
+            if hasattr(el, "get") and el.get("data-sku"):
+                return str(el.get("data-sku")).strip()
             txt = el.get_text(" ", strip=True) if hasattr(el, "get_text") else (el.get("content") or "")
             txt = re.sub(r"(?i)\b(SKU|Stok Kodu|Model)\b[:\s]*", "", txt).strip()
             if txt:
@@ -371,6 +397,13 @@ def find_sku(soup: BeautifulSoup) -> Optional[str]:
 
 def find_description_html(soup: BeautifulSoup) -> Optional[str]:
     for sel in [
+        # Ticimax
+        "#detayTab",
+        "#detayTab .tab-content",
+        "#detayTabContent",
+        ".urunDetayAciklama",
+        ".productDetail .urunDetayAciklama",
+        # Existing/common
         "#productDescription",
         ".product-description",
         ".product-desc",
@@ -657,6 +690,81 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
     all_pages: List[Dict[str, Any]] = []
     pages = 0
 
+    # 1) Try to discover links via sitemap(s) first
+    sitemap_candidates = [
+        "/sitemap.xml",
+        "/sitemap_index.xml",
+        "/sitemap-products.xml",
+        "/sitemap_products.xml",
+        "/sitemap-product.xml",
+        "/urun-sitemap.xml",
+        "/product-sitemap.xml",
+        "/kategori-sitemap.xml",
+        "/category-sitemap.xml",
+    ]
+
+    def _fetch_xml(url: str) -> Optional[BeautifulSoup]:
+        try:
+            r = requests.get(url, headers=DEFAULT_HEADERS, timeout=20)
+            if r.status_code >= 200 and r.status_code < 400 and ("xml" in r.headers.get("Content-Type", "").lower() or r.text.strip().startswith("<?xml")):
+                return BeautifulSoup(r.text, "xml")
+        except Exception:
+            pass
+        return None
+
+    def _extract_locs_from_sitemap(soup_xml: BeautifulSoup) -> List[str]:
+        locs: List[str] = []
+        if not soup_xml:
+            return locs
+        for loc in soup_xml.find_all("loc"):
+            if loc and loc.string:
+                locs.append(loc.string.strip())
+        return locs
+
+    def _filter_product_category_links(urls: List[str]) -> List[str]:
+        keep_patterns = ["/urun/", "/product/", "/kategori/", "/category/"]
+        out: List[str] = []
+        for u in urls:
+            try:
+                if _same_domain(start_url, u) and any(p in urlparse(u).path.lower() for p in keep_patterns):
+                    if not _should_exclude_url(u):
+                        out.append(u)
+            except Exception:
+                continue
+        return list(dict.fromkeys(out))
+
+    discovered_from_sitemaps: List[str] = []
+    base = start_url.rstrip("/")
+    xml_queue: List[str] = [base + s for s in sitemap_candidates]
+    xml_seen: Set[str] = set()
+
+    child_limit = 20
+    child_count = 0
+
+    while xml_queue and child_count <= child_limit:
+        xml_url = xml_queue.pop(0)
+        if xml_url in xml_seen:
+            continue
+        xml_seen.add(xml_url)
+        soup_xml = _fetch_xml(xml_url)
+        if not soup_xml:
+            continue
+        locs = _extract_locs_from_sitemap(soup_xml)
+        if not locs:
+            continue
+        is_index = bool(soup_xml.find("sitemapindex"))
+        if is_index:
+            for child in locs:
+                if child.endswith(".xml") and child_count <= child_limit:
+                    xml_queue.append(child)
+                    child_count += 1
+        discovered_from_sitemaps.extend(locs)
+
+    filtered_sitemap_urls = _filter_product_category_links(discovered_from_sitemaps)
+    for u in filtered_sitemap_urls:
+        if u not in to_visit:
+            to_visit.append(u)
+
     while to_visit and pages < max_pages:
         current = to_visit.pop(0)
         if current in visited or _should_exclude_url(current):
@@ -698,7 +806,7 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
             "type": page_type,
         })
 
-        # Discover more links
+        # Discover more links from within the page (normal crawling)
         found_here, next_link = _discover_all_links_from_page(current, html_str)
         new_links = [u for u in found_here if u not in visited and u not in to_visit]
         to_visit.extend(new_links)
