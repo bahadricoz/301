@@ -35,7 +35,12 @@ def fetch_html(url: str, timeout: int = 20, max_retries: int = 3, sleep_between:
     for attempt in range(1, max_retries + 1):
         try:
             resp = session.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
-            if resp.status_code >= 200 and resp.status_code < 400 and "text/html" in resp.headers.get("Content-Type", ""):
+            content_type = resp.headers.get("Content-Type", "")
+            is_html = "text/html" in content_type
+            if (
+                (200 <= resp.status_code < 400 and is_html)
+                or (resp.status_code in (403, 503) and is_html and (resp.text or "").strip())
+            ):
                 return resp.text
             else:
                 logging.warning("Non-OK response %s for %s", resp.status_code, url)
@@ -88,7 +93,10 @@ def _same_domain(url_a: str, url_b: str) -> bool:
     try:
         pa = urlparse(url_a)
         pb = urlparse(url_b)
-        return pa.netloc == pb.netloc
+        def _normalize_host(h: str) -> str:
+            h_l = (h or "").lower()
+            return h_l[4:] if h_l.startswith("www.") else h_l
+        return _normalize_host(pa.netloc) == _normalize_host(pb.netloc)
     except Exception:
         return False
 
@@ -139,7 +147,11 @@ def _determine_page_type(url: str, soup: BeautifulSoup) -> str:
     path = urlparse(url_l).path
     
     # Product patterns
-    product_patterns = ["/urun-", "/urun/", "/product/", "/p-", "/p/", "/detay-", "/detail/"]
+    product_patterns = [
+        "/urun-", "/urun/", "/urunler/",
+        "/product/", "/products/",
+        "/p-", "/p/", "/detay-", "/detail/", "/item/", "/items/"
+    ]
     if any(p in path for p in product_patterns):
         return "product"
     
@@ -149,7 +161,11 @@ def _determine_page_type(url: str, soup: BeautifulSoup) -> str:
         return "blog"
 
     # Category patterns
-    category_patterns = ["/kategori", "/category", "/katalog", "/catalog"]
+    category_patterns = [
+        "/kategori", "/kategoriler/", "/kategori/",
+        "/category", "/categories/", "/category/",
+        "/katalog", "/catalog"
+    ]
     if any(p in path for p in category_patterns):
         return "category"
     
@@ -722,7 +738,10 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
         return locs
 
     def _filter_product_category_links(urls: List[str]) -> List[str]:
-        keep_patterns = ["/urun/", "/product/", "/kategori/", "/category/"]
+        keep_patterns = [
+            "/urun/", "/urunler/", "/product/", "/products/",
+            "/kategori/", "/kategoriler/", "/category/", "/categories/"
+        ]
         out: List[str] = []
         for u in urls:
             try:
