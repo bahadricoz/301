@@ -138,6 +138,7 @@ def _should_exclude_url(href: str) -> bool:
         "#",
         "?print=",
         "?export=",
+        "/just-a-moment",
     ]
     return any(pattern in href_l for pattern in exclude_patterns)
 
@@ -754,7 +755,18 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
 
     discovered_from_sitemaps: List[str] = []
     base = start_url.rstrip("/")
+    def _toggle_www(url: str) -> str:
+        p = urlparse(url)
+        host = p.netloc
+        if host.lower().startswith("www."):
+            new_host = host[4:]
+        else:
+            new_host = "www." + host if host else host
+        return urlunparse((p.scheme, new_host, p.path, "", "", ""))
+
     xml_queue: List[str] = [base + s for s in sitemap_candidates]
+    # also try the www toggled host for sitemap endpoints
+    xml_queue += [_toggle_www(base) + s for s in sitemap_candidates]
     xml_seen: Set[str] = set()
 
     child_limit = 20
@@ -778,6 +790,20 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
                     xml_queue.append(child)
                     child_count += 1
         discovered_from_sitemaps.extend(locs)
+
+    # Additionally, try robots.txt for sitemap locations
+    robots_urls = [base + "/robots.txt", _toggle_www(base) + "/robots.txt"]
+    for robots in robots_urls:
+        try:
+            r = requests.get(robots, headers=DEFAULT_HEADERS, timeout=15)
+            if r.status_code >= 200 and r.status_code < 400 and isinstance(r.text, str):
+                for line in r.text.splitlines():
+                    if line.strip().lower().startswith("sitemap:"):
+                        sm = line.split(":", 1)[1].strip()
+                        if sm:
+                            discovered_from_sitemaps.append(sm)
+        except Exception:
+            pass
 
     filtered_sitemap_urls = _filter_product_category_links(discovered_from_sitemaps)
     for u in filtered_sitemap_urls:
@@ -835,9 +861,9 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
 
     return all_pages
 
-st.set_page_config(page_title="IdeaSoft -> İkas 301 Redirect", page_icon="🔄", layout="wide")
+st.set_page_config(page_title="IdeaSoft/Ticimax -> İkas 301 Redirect", page_icon="🔄", layout="wide")
 
-st.title("🔄 IdeaSoft -> İkas 301 Redirect Oluşturucu")
+st.title("🔄 IdeaSoft/Ticimax -> İkas 301 Redirect Oluşturucu")
 st.caption("Domain'deki tüm sayfalar için 301 redirect CSV dosyası oluşturur ve İkas ürünleriyle eşler.")
 
 with st.expander("Nasıl kullanırım?", expanded=False):
