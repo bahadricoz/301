@@ -993,6 +993,63 @@ if start:
             if title_norm:
                 title_to_slug.append((title_norm, str(r.get("Slug", "")).strip()))
 
+    # Ticimax lookup indexes (from uploaded file) to avoid fetching
+    ticimax_by_path: Dict[str, Dict[str, str]] = {}
+    ticimax_by_slug: Dict[str, Dict[str, str]] = {}
+    if ticimax_csv is not None:
+        try:
+            ticimax_csv.seek(0)
+        except Exception:
+            pass
+        try:
+            tdf = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8-sig")
+        except Exception:
+            try:
+                ticimax_csv.seek(0)
+            except Exception:
+                pass
+            tdf = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8")
+        tdf = tdf.fillna("")
+        url_cols = [
+            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "Ürün Linki", "urun_link",
+            "SeoUrl", "Seo URL", "Slug", "Seo Adres", "Seo-Url"
+        ]
+        sku_cols = ["SKU", "Sku", "StockCode", "Stock Code", "Stok Kodu", "StokKodu", "UrunKodu", "Ürün Kodu"]
+        barcode_cols = ["Barkod", "Barcode", "EAN", "GTIN", "Gtin", "Gtin13", "Barkod Listesi"]
+        title_cols = ["Title", "Ürün Adı", "Urun Adi", "UrunAdi", "Name", "ProductName"]
+
+        def _pick(row, cols):
+            for c in cols:
+                if c in row and str(row[c]).strip():
+                    return str(row[c]).strip()
+            return ""
+
+        for _, r in tdf.iterrows():
+            raw_url = _pick(r, url_cols)
+            sku_v = _normalize_sku(_pick(r, sku_cols))
+            barcode_v = _normalize_sku(_pick(r, barcode_cols))
+            title_v = _pick(r, title_cols)
+            # path and slug
+            path = ""
+            slug_guess = ""
+            if raw_url:
+                try:
+                    p = urlparse(raw_url)
+                    if not p.scheme:
+                        p = urlparse(_absolute_url(base_url, raw_url))
+                    path = p.path
+                    slug_guess = p.path.strip("/").split("/")[-1] if p.path else ""
+                except Exception:
+                    pass
+            if not slug_guess:
+                slug_guess = _pick(r, ["Slug", "SeoUrl", "Seo URL", "Seo-Url"]) or slugify(title_v)
+
+            info = {"sku": sku_v, "barcode": barcode_v, "title": title_v, "slug": slug_guess}
+            if path:
+                ticimax_by_path[path] = info
+            if slug_guess:
+                ticimax_by_slug[slug_guess] = info
+
     # Create 301 redirect mapping
     redirects_rows: List[Dict[str, Any]] = []
     diagnostics: List[Dict[str, Any]] = []
@@ -1011,15 +1068,26 @@ if start:
         confidence = 0.0
         reason = ""
         if page_type == "product":
-            # Fetch once to try to get SKU/Barcode and improve match
+            # Prefer identifiers from uploaded Ticimax CSV (no network)
             try:
-                html_str = fetch_html(old_url)
-                if html_str:
-                    soup = BeautifulSoup(html_str, "html.parser")
-                    sku = _normalize_sku(find_sku(soup) or "")
-                    barcode = _normalize_sku(find_barcode(soup, None) or "")
+                pth = urlparse(old_url).path
+                last_seg = pth.strip("/").split("/")[-1] if pth else ""
+                info = ticimax_by_path.get(pth) or ticimax_by_slug.get(last_seg)
+                if info:
+                    sku = info.get("sku", "") or sku
+                    barcode = info.get("barcode", "") or barcode
             except Exception:
                 pass
+            # Fallback: Fetch once to try to get SKU/Barcode
+            if not sku and not barcode:
+                try:
+                    html_str = fetch_html(old_url)
+                    if html_str:
+                        soup = BeautifulSoup(html_str, "html.parser")
+                        sku = _normalize_sku(find_sku(soup) or "")
+                        barcode = _normalize_sku(find_barcode(soup, None) or "")
+                except Exception:
+                    pass
 
             # 1) Match by SKU (exact)
             if sku and sku in sku_to_slug:
