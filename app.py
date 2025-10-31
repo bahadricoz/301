@@ -891,21 +891,21 @@ def find_all_page_links(start_url: str, max_pages: int = 100, seed_urls: Optiona
 st.set_page_config(page_title="IdeaSoft/Ticimax -> İkas 301 Redirect", page_icon="🔄", layout="wide")
 
 st.title("🔄 IdeaSoft/Ticimax -> İkas 301 Redirect Oluşturucu")
-st.caption("Domain'deki tüm sayfalar için 301 redirect CSV dosyası oluşturur ve İkas ürünleriyle eşler.")
+st.caption("Eski URL'leri akıllı eşleştirme (SKU > Barkod > Başlık) ile İkas ürünlerine yönlendirir ve 301 CSV üretir.")
 
 with st.expander("Nasıl kullanırım?", expanded=False):
     st.markdown(
-        "- Ana sayfa URL'si girin (örn. `https://magaza.com`).\n"
-        "- 'Başlat' butonuna basın.\n"
-        "- Tüm sayfalar (ürünler, kategoriler, statik sayfalar) taranır.\n"
-        "- Checkout, sepet, login gibi sayfalar otomatik olarak hariç tutulur.\n"
-        "- İkas formatında 301 redirect CSV dosyası indirilir."
+        "- ZORUNLU: İkas Ürün CSV (Slug, SKU, Barkod) yükleyin.\n"
+        "- Opsiyonel: Eski URL listesi (CSV/Excel) yüklerseniz tarama atlanır ve bu liste kullanılır.\n"
+        "- Dosya yüklemezseniz ana sayfa URL'sini girip taramayı başlatabilirsiniz.\n"
+        "- Eşleştirme önceliği: SKU > Barkod > Başlık benzerliği.\n"
+        "- Çıktı: tek dosya 'ikas_301_redirects.csv'."
     )
 
 input_url = st.text_input("IdeaSoft Ana Sayfa URL", placeholder="https://magaza.com")
 ikas_site_url = st.text_input("İkas Site URL (opsiyonel - doğrulama)", placeholder="https://shop.myikas.com")
-ikas_csv = st.file_uploader("İkas Ürün CSV (opsiyonel, eşleştirme doğruluğunu artırır)", type=["csv", "CSV"]) 
-ticimax_csv = st.file_uploader("Ticimax Ürün CSV (opsiyonel - URL/Slug/SKU temel seed)", type=["csv", "CSV"]) 
+ikas_csv = st.file_uploader("İkas Ürün CSV (ZORUNLU - Slug, SKU, Barkod)", type=["csv", "CSV"]) 
+url_list_file = st.file_uploader("Eski URL Listesi (CSV/Excel) - opsiyonel", type=["csv", "CSV", "xls", "xlsx", "XLS", "XLSX"]) 
 
 start = st.button("Başlat", type="primary")
 
@@ -923,35 +923,8 @@ if start:
     st.info("🔍 Site taranıyor, tüm sayfalar toplanıyor...")
     progress = st.progress(0)
     status = st.empty()
-    
-    # Build seed URLs from optional Ticimax CSV
-    seed_urls: List[str] = []
-    if ticimax_csv is not None:
-        try:
-            td = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8-sig")
-        except Exception:
-            ticimax_csv.seek(0)
-            td = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8")
-        td = td.fillna("")
-        url_cols = [
-            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "UrunURL", "URUNURL", "Ürün Linki", "urun_link",
-            "Sorgul_URL", "SORGUL_URL", "SorguUrl", "Sorgu_URL",
-            "SeoUrl", "Seo URL", "Slug", "Seo Adres", "Seo-Url"
-        ]
-        for col in url_cols:
-            if col in td.columns:
-                for v in td[col].astype(str).tolist():
-                    v = v.strip()
-                    if not v:
-                        continue
-                    abs_u = _absolute_url(base_url, v) if not v.lower().startswith("http") else v
-                    if _same_domain(base_url, abs_u) and not _should_exclude_url(abs_u):
-                        seed_urls.append(abs_u)
-        # de-dup while preserving order
-        seed_urls = list(dict.fromkeys(seed_urls))
-
     try:
-        pages = find_all_page_links(base_url, max_pages=200, seed_urls=seed_urls or None)
+        pages = find_all_page_links(base_url, max_pages=200)
     except Exception as exc:
         st.error(f"Hata oluştu: {exc}")
         logging.exception("Sayfa toplama hatası")
@@ -960,22 +933,6 @@ if start:
     progress.progress(1.0)
     status.empty()
 
-    # Fallback: if crawling produced no pages but we have seed URLs from Ticimax file,
-    # build pages directly from those URLs so we can generate redirects.
-    if not pages and seed_urls:
-        pages = []
-        for u in seed_urls:
-            path = urlparse(u).path
-            last_seg = path.strip("/").split("/")[-1] if path else ""
-            title_guess = last_seg.replace("-", " ").replace("_", " ").strip().title() or u
-            slug = slugify(title_guess) if title_guess else last_seg
-            page_type = _determine_page_type(u, None)
-            pages.append({
-                "url": u,
-                "title": title_guess,
-                "slug": slug,
-                "type": page_type,
-            })
     if not pages:
         st.warning("Hiç sayfa bulunamadı. Farklı bir URL deneyin veya Ticimax CSV yükleyin.")
         st.stop()
@@ -1010,63 +967,9 @@ if start:
             if title_norm:
                 title_to_slug.append((title_norm, str(r.get("Slug", "")).strip()))
 
-    # Ticimax lookup indexes (from uploaded file) to avoid fetching
+    # No Ticimax CSV in this workflow; indices not used
     ticimax_by_path: Dict[str, Dict[str, str]] = {}
     ticimax_by_slug: Dict[str, Dict[str, str]] = {}
-    if ticimax_csv is not None:
-        try:
-            ticimax_csv.seek(0)
-        except Exception:
-            pass
-        try:
-            tdf = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8-sig")
-        except Exception:
-            try:
-                ticimax_csv.seek(0)
-            except Exception:
-                pass
-            tdf = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8")
-        tdf = tdf.fillna("")
-        url_cols = [
-            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "UrunURL", "URUNURL", "Ürün Linki", "urun_link",
-            "Sorgul_URL", "SORGUL_URL", "SorguUrl", "Sorgu_URL",
-            "SeoUrl", "Seo URL", "Slug", "Seo Adres", "Seo-Url"
-        ]
-        sku_cols = ["SKU", "Sku", "StockCode", "Stock Code", "Stok Kodu", "StokKodu", "STOKKODU", "UrunKodu", "URUNKODU", "Ürün Kodu"]
-        barcode_cols = ["Barkod", "BARKOD", "Barcode", "EAN", "GTIN", "Gtin", "Gtin13", "Barkod Listesi"]
-        title_cols = ["Title", "Ürün Adı", "URUNADI", "Urun Adi", "UrunAdi", "Name", "ProductName"]
-
-        def _pick(row, cols):
-            for c in cols:
-                if c in row and str(row[c]).strip():
-                    return str(row[c]).strip()
-            return ""
-
-        for _, r in tdf.iterrows():
-            raw_url = _pick(r, url_cols)
-            sku_v = _normalize_sku(_pick(r, sku_cols))
-            barcode_v = _normalize_sku(_pick(r, barcode_cols))
-            title_v = _pick(r, title_cols)
-            # path and slug
-            path = ""
-            slug_guess = ""
-            if raw_url:
-                try:
-                    p = urlparse(raw_url)
-                    if not p.scheme:
-                        p = urlparse(_absolute_url(base_url, raw_url))
-                    path = p.path
-                    slug_guess = p.path.strip("/").split("/")[-1] if p.path else ""
-                except Exception:
-                    pass
-            if not slug_guess:
-                slug_guess = _pick(r, ["Slug", "SeoUrl", "Seo URL", "Seo-Url"]) or slugify(title_v)
-
-            info = {"sku": sku_v, "barcode": barcode_v, "title": title_v, "slug": slug_guess}
-            if path:
-                ticimax_by_path[path] = info
-            if slug_guess:
-                ticimax_by_slug[slug_guess] = info
 
     # Create 301 redirect mapping
     redirects_rows: List[Dict[str, Any]] = []
@@ -1118,9 +1021,27 @@ if start:
                 confidence = 0.98
                 reason = "barcode"
             else:
-                # No safe match; leave empty
-                target_path = ""
-                reason = "unmatched"
+                # 3) Title similarity (normalized)
+                best_slug = ""
+                best_score = 0.0
+                title_norm_src = _normalize_title(title) or _normalize_title(slug)
+                if title_norm_src and title_to_slug:
+                    for t_norm, s_val in title_to_slug:
+                        try:
+                            score = SequenceMatcher(None, title_norm_src, t_norm).ratio()
+                        except Exception:
+                            score = 0.0
+                        if score > best_score:
+                            best_score = score
+                            best_slug = s_val
+                if best_slug and best_score >= 0.8:
+                    target_path = f"/urun/{best_slug}"
+                    confidence = round(best_score, 3)
+                    reason = "title"
+                else:
+                    # No safe match; leave empty
+                    target_path = ""
+                    reason = "unmatched"
         elif page_type == "category":
             # Ikas format: /kategori-adi (no /kategori/ prefix)
             target_path = f"/{slug}"
@@ -1129,7 +1050,7 @@ if start:
             target_path = f"/blog/{slug}"
             reason = "blog"
         elif page_type == "page":
-            target_path = f"/pages/{slug}"
+            target_path = f"/sayfa/{slug}"
             reason = "page"
         else:
             # Other non-product pages
@@ -1231,9 +1152,9 @@ if start:
     st.success("✅ 301 redirect dosyası hazır!")
 
     st.download_button(
-        label="📥 ikas_301.csv İndir",
+        label="📥 ikas_301_redirects.csv İndir",
         data=redirects_buf,
-        file_name="ikas_301.csv",
+        file_name="ikas_301_redirects.csv",
         mime="text/csv",
         type="primary",
     )
