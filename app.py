@@ -711,6 +711,8 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
     sitemap_candidates = [
         "/sitemap.xml",
         "/sitemap_index.xml",
+        "/sitemap.xml.gz",
+        "/sitemap-index.xml.gz",
         "/sitemap-products.xml",
         "/sitemap_products.xml",
         "/sitemap-product.xml",
@@ -723,7 +725,11 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
     def _fetch_xml(url: str) -> Optional[BeautifulSoup]:
         try:
             r = requests.get(url, headers=DEFAULT_HEADERS, timeout=20)
-            if r.status_code >= 200 and r.status_code < 400 and ("xml" in r.headers.get("Content-Type", "").lower() or r.text.strip().startswith("<?xml")):
+            ct = (r.headers.get("Content-Type", "") or "").lower()
+            url_l = url.lower()
+            is_xmlish = ("xml" in ct) or url_l.endswith(".xml") or url_l.endswith(".xml.gz") or (r.text or "").strip().startswith("<?xml")
+            if r.status_code >= 200 and r.status_code < 400 and is_xmlish:
+                # requests handles gzip automatically; decode to text for soup
                 return BeautifulSoup(r.text, "xml")
         except Exception:
             pass
@@ -740,7 +746,9 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
 
     def _filter_product_category_links(urls: List[str]) -> List[str]:
         keep_patterns = [
-            "/urun/", "/urunler/", "/product/", "/products/",
+            # product
+            "/urun/", "/urunler/", "/urun-", "/p/", "/p-", "/detay-", "/detail/", "/product/", "/products/",
+            # category
             "/kategori/", "/kategoriler/", "/category/", "/categories/"
         ]
         out: List[str] = []
@@ -786,7 +794,7 @@ def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, 
         is_index = bool(soup_xml.find("sitemapindex"))
         if is_index:
             for child in locs:
-                if child.endswith(".xml") and child_count <= child_limit:
+                if (child.endswith(".xml") or child.endswith(".xml.gz")) and child_count <= child_limit:
                     xml_queue.append(child)
                     child_count += 1
         discovered_from_sitemaps.extend(locs)
