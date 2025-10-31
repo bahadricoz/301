@@ -696,13 +696,18 @@ def _discover_all_links_from_page(base_url: str, html_str: str) -> Tuple[Set[str
 
     return found, next_link
 
-def find_all_page_links(start_url: str, max_pages: int = 100) -> List[Dict[str, Any]]:
+def find_all_page_links(start_url: str, max_pages: int = 100, seed_urls: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Find all pages (products, categories, static pages) from the site."""
     start_html = fetch_html(start_url)
     if not start_html:
         return []
 
     to_visit: List[str] = [start_url]
+    # Seed with optional URLs (e.g., from an uploaded CSV)
+    if seed_urls:
+        for u in seed_urls:
+            if isinstance(u, str) and u and u not in to_visit:
+                to_visit.append(u)
     visited: Set[str] = set()
     all_pages: List[Dict[str, Any]] = []
     pages = 0
@@ -886,6 +891,7 @@ with st.expander("Nasıl kullanırım?", expanded=False):
 input_url = st.text_input("IdeaSoft Ana Sayfa URL", placeholder="https://magaza.com")
 ikas_site_url = st.text_input("İkas Site URL (opsiyonel - doğrulama)", placeholder="https://shop.myikas.com")
 ikas_csv = st.file_uploader("İkas Ürün CSV (opsiyonel, eşleştirme doğruluğunu artırır)", type=["csv", "CSV"]) 
+ticimax_csv = st.file_uploader("Ticimax Ürün CSV (opsiyonel - URL/Slug/SKU temel seed)", type=["csv", "CSV"]) 
 
 start = st.button("Başlat", type="primary")
 
@@ -904,8 +910,33 @@ if start:
     progress = st.progress(0)
     status = st.empty()
     
+    # Build seed URLs from optional Ticimax CSV
+    seed_urls: List[str] = []
+    if ticimax_csv is not None:
+        try:
+            td = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8-sig")
+        except Exception:
+            ticimax_csv.seek(0)
+            td = pd.read_csv(ticimax_csv, dtype=str, encoding="utf-8")
+        td = td.fillna("")
+        url_cols = [
+            "URL", "Url", "url", "Link", "ProductUrl", "UrunUrl", "Ürün Linki", "urun_link",
+            "SeoUrl", "Seo URL", "Slug", "Seo Adres", "Seo-Url"
+        ]
+        for col in url_cols:
+            if col in td.columns:
+                for v in td[col].astype(str).tolist():
+                    v = v.strip()
+                    if not v:
+                        continue
+                    abs_u = _absolute_url(base_url, v) if not v.lower().startswith("http") else v
+                    if _same_domain(base_url, abs_u) and not _should_exclude_url(abs_u):
+                        seed_urls.append(abs_u)
+        # de-dup while preserving order
+        seed_urls = list(dict.fromkeys(seed_urls))
+
     try:
-        pages = find_all_page_links(base_url, max_pages=200)
+        pages = find_all_page_links(base_url, max_pages=200, seed_urls=seed_urls or None)
     except Exception as exc:
         st.error(f"Hata oluştu: {exc}")
         logging.exception("Sayfa toplama hatası")
