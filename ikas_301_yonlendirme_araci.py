@@ -28,20 +28,22 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("📤 Eski Ürün/Kategori Verisi")
-    eski_dosya = st.file_uploader(
-        "Eski platformdan CSV dosyası yükleyin",
+    eski_dosyalar = st.file_uploader(
+        "Eski platformdan CSV dosyası yükleyin (birden fazla dosya seçebilirsiniz)",
         type=['csv'],
         key='eski',
-        help="En az 3 sütun içermeli: Eşleştirme Anahtarı, Eski URL Yolu, Ürün Adı/Başlığı"
+        accept_multiple_files=True,
+        help="En az 3 sütun içermeli: Eşleştirme Anahtarı, Eski URL Yolu, Ürün Adı/Başlığı. Birden fazla dosya seçebilirsiniz, hepsi otomatik birleştirilir."
     )
 
 with col2:
     st.subheader("📥 İkas Ürün/Kategori Verisi")
-    ikas_dosya = st.file_uploader(
-        "İkas'tan CSV dosyası yükleyin",
+    ikas_dosyalar = st.file_uploader(
+        "İkas'tan CSV dosyası yükleyin (birden fazla dosya seçebilirsiniz)",
         type=['csv'],
         key='ikas',
-        help="En az 3 sütun içermeli: Eşleştirme Anahtarı, Yeni URL Yolu, Ürün Adı/Başlığı"
+        accept_multiple_files=True,
+        help="En az 3 sütun içermeli: Eşleştirme Anahtarı, Yeni URL Yolu, Ürün Adı/Başlığı. Birden fazla dosya seçebilirsiniz, hepsi otomatik birleştirilir."
     )
 
 # Opsiyonel Blog/Sayfa verisi
@@ -93,15 +95,77 @@ def temizle_url(url):
     return url
 
 
+def normalize_turkish(text):
+    """Türkçe karakterleri normalize eder"""
+    import unicodedata
+    text = str(text)
+    # Önce Türkçe karakterleri değiştir (NFKD'den önce)
+    replacements = {
+        'İ': 'i', 'ı': 'i', 'I': 'i',
+        'ğ': 'g', 'Ğ': 'g',
+        'ü': 'u', 'Ü': 'u',
+        'ş': 's', 'Ş': 's',
+        'ö': 'o', 'Ö': 'o',
+        'ç': 'c', 'Ç': 'c'
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    # Sonra normalize et ve lowercase yap
+    text = unicodedata.normalize('NFKD', text)
+    text = text.lower().strip()
+    # Combining karakterleri kaldır
+    text = ''.join(c for c in text if not unicodedata.combining(c))
+    return text
+
+
 def sutun_secici(df, anahtar_kelimeler, dosya_adi):
     """DataFrame'den uygun sütunu bulmaya çalışır"""
+    # Önce tam eşleşme dene (Türkçe karakter desteği ile)
     for anahtar in anahtar_kelimeler:
         for col in df.columns:
-            if anahtar.lower() in col.lower():
+            col_normalized = normalize_turkish(col)
+            anahtar_normalized = normalize_turkish(anahtar)
+            # Tam eşleşme (en önemli - öncelikli)
+            if col_normalized == anahtar_normalized:
+                return col
+    
+    # Kısa kelimeler için (ad, isim, name gibi) sadece tam eşleşme kabul et (Türkçe karakter desteği ile)
+    kisa_kelimeler = ['ad', 'isim', 'name', 'title']
+    for anahtar in anahtar_kelimeler:
+        if normalize_turkish(anahtar) in kisa_kelimeler:
+            for col in df.columns:
+                col_normalized = normalize_turkish(col)
+                anahtar_normalized = normalize_turkish(anahtar)
+                # Kısa kelimeler için sadece tam eşleşme
+                if col_normalized == anahtar_normalized:
+                    return col
+    
+    # Çok kelimeli eşleşme kontrolü (örn: "ürün adı" için "Ürün Adı" sütunu)
+    for anahtar in anahtar_kelimeler:
+        if ' ' in anahtar:  # Çok kelimeli anahtar
+            anahtar_kelimeleri = normalize_turkish(anahtar).split()
+            for col in df.columns:
+                col_normalized = normalize_turkish(col)
+                # Sütun adı tüm anahtar kelimeleri içeriyorsa
+                if all(kelime in col_normalized for kelime in anahtar_kelimeleri):
+                    if 'metafield' not in col_normalized and 'linked' not in col_normalized and 'metadata' not in col_normalized:
+                        return col
+    
+    # Tam eşleşme bulunamazsa içerme kontrolü yap (ama kısa kelimeler için değil)
+    kisa_kelimeler = ['ad', 'isim', 'name', 'title']
+    for anahtar in anahtar_kelimeler:
+        # Kısa kelimeler için içerme kontrolü yapma, sadece tam eşleşme kabul et
+        if normalize_turkish(anahtar) in kisa_kelimeler:
+            continue
+        for col in df.columns:
+            col_normalized = normalize_turkish(col)
+            anahtar_normalized = normalize_turkish(anahtar)
+            # Sütun adı anahtar kelimeyi içeriyor ama "metafield", "metadata", "linked" değilse
+            if anahtar_normalized in col_normalized and 'metafield' not in col_normalized and 'linked' not in col_normalized and 'metadata' not in col_normalized:
                 return col
     
     # Bulunamazsa kullanıcıya göster ve seç
-    st.warning(f"⚠️ {dosya_adi} dosyasında '{', '.join(anahtar_kelimeler)}' içeren sütun bulunamadı.")
+    st.warning(f"⚠️ {dosya_adi} dosyasında '{', '.join(anahtar_kelimeler[:3])}...' içeren sütun bulunamadı.")
     return st.selectbox(
         f"{dosya_adi} - Uygun sütunu seçin:",
         options=df.columns.tolist(),
@@ -118,12 +182,13 @@ def isle_veriyi(eski_df, ikas_df, eslesme_tipi):
             eski_anahtar_kelimeler = ['sku', 'barkod', 'barcode', 'code', 'kod']
             ikas_anahtar_kelimeler = ['sku', 'barkod', 'barcode', 'code', 'kod']
         else:  # Ürün Adı/Başlığı
-            eski_anahtar_kelimeler = ['ürün', 'urun', 'name', 'title', 'başlık', 'baslik', 'ad']
-            ikas_anahtar_kelimeler = ['ürün', 'urun', 'name', 'title', 'başlık', 'baslik', 'ad']
+            eski_anahtar_kelimeler = ['title', 'name', 'ürün', 'urun', 'başlık', 'baslik', 'ad']
+            # İkas için önce "İsim" sütununu bul, sonra diğerleri
+            ikas_anahtar_kelimeler = ['isim', 'ad', 'ürün adı', 'ürün ismi', 'ürün adi', 'name', 'title', 'başlık', 'baslik', 'ürün', 'urun']
         
         # URL yolu anahtarları
-        eski_url_kelimeler = ['url', 'slug', 'path', 'yol', 'link', 'handle']
-        ikas_url_kelimeler = ['url', 'slug', 'path', 'yol', 'link', 'handle']
+        eski_url_kelimeler = ['handle', 'slug', 'url', 'path', 'yol', 'link']
+        ikas_url_kelimeler = ['slug', 'url', 'handle', 'path', 'yol', 'link']
         
         # Sütunları bul
         eski_anahtar_col = sutun_secici(eski_df, eski_anahtar_kelimeler, "Eski Veri - Eşleştirme Anahtarı")
@@ -231,21 +296,51 @@ def isle_blog_veriyi(blog_df):
         return None
 
 
+# Birden fazla dosyayı birleştiren fonksiyon
+def dosyalari_birlestir(dosyalar, dosya_tipi):
+    """Birden fazla CSV dosyasını birleştirir"""
+    if not dosyalar or len(dosyalar) == 0:
+        return None
+    
+    dataframes = []
+    for i, dosya in enumerate(dosyalar):
+        try:
+            df = pd.read_csv(dosya)
+            dataframes.append(df)
+            st.success(f"✅ {dosya_tipi} - Dosya {i+1} ({dosya.name}): {len(df)} kayıt yüklendi")
+        except Exception as e:
+            st.warning(f"⚠️ {dosya_tipi} - Dosya {i+1} ({dosya.name}) okunurken hata: {str(e)}")
+            continue
+    
+    if len(dataframes) == 0:
+        return None
+    
+    # Tüm DataFrame'leri birleştir
+    birlesik_df = pd.concat(dataframes, ignore_index=True)
+    # Tekrar eden kayıtları kaldır
+    birlesik_df = birlesik_df.drop_duplicates()
+    
+    return birlesik_df
+
+
 # İşle butonu
 if st.button("🚀 Verileri İşle ve 301 Listesi Oluştur", type="primary"):
     
     # Zorunlu dosyaların kontrolü
-    if eski_dosya is None or ikas_dosya is None:
+    if not eski_dosyalar or len(eski_dosyalar) == 0 or not ikas_dosyalar or len(ikas_dosyalar) == 0:
         st.error("❌ Lütfen en az 'Eski Ürün/Kategori Verisi' ve 'İkas Ürün/Kategori Verisi' dosyalarını yükleyin!")
     else:
         with st.spinner("⏳ Veriler işleniyor..."):
             try:
-                # CSV dosyalarını oku
-                eski_df = pd.read_csv(eski_dosya)
-                ikas_df = pd.read_csv(ikas_dosya)
+                # CSV dosyalarını oku ve birleştir
+                eski_df = dosyalari_birlestir(eski_dosyalar, "Eski veri")
+                ikas_df = dosyalari_birlestir(ikas_dosyalar, "İkas veri")
                 
-                st.success(f"✅ Eski veri: {len(eski_df)} kayıt yüklendi")
-                st.success(f"✅ İkas veri: {len(ikas_df)} kayıt yüklendi")
+                if eski_df is None or ikas_df is None:
+                    st.error("❌ Dosyalar okunurken bir hata oluştu!")
+                else:
+                    st.info(f"📊 Eski veri toplam: {len(eski_df)} kayıt (birleştirilmiş)")
+                    st.info(f"📊 İkas veri toplam: {len(ikas_df)} kayıt (birleştirilmiş)")
                 
                 # Ana işlemi yap
                 sonuc_df = isle_veriyi(eski_df, ikas_df, eslesme_tipi)
